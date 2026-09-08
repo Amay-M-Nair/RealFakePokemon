@@ -1,0 +1,13 @@
+data/
+checkpoints/
+runs/
+samples/
+notebooks/
+docs/
+src/
+.git/
+__pycache__/
+*.pyc
+*.pt
+server/db.sqlite3
+server/staticfiles/

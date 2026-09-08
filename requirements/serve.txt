@@ -1,0 +1,9 @@
+django>=5.0
+gunicorn
+whitenoise
+onnxruntime
+numpy
+pillow
+django-ratelimit
+psycopg[binary]
+dj-database-url

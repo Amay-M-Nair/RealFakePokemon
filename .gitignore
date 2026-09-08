@@ -1,0 +1,33 @@
+# Training data — Pokémon artwork is © Nintendo/Creatures/GAME FREAK.
+# Never commit it. Use `python -m src.data.download` instead.
+data/
+checkpoints/
+runs/
+samples/
+
+# Model artifacts
+*.pt
+*.pth
+*.onnx
+*.ckpt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.ipynb_checkpoints/
+
+# Django
+*.sqlite3
+.env
+server/staticfiles/
+server/media/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

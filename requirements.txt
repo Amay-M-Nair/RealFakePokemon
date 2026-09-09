@@ -1,0 +1,8 @@
+# Phase 1: data pipeline only.
+# torch / torchvision arrive in Phase 2 with the model.
+numpy
+scipy          # DCT for pHash
+pillow
+requests
+tqdm
+matplotlib     # notebook only

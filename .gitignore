@@ -1,9 +1,11 @@
 # Training data — Pokémon artwork is © Nintendo/Creatures/GAME FREAK.
 # Never commit it. Use `python -m src.data.download` instead.
-data/
-checkpoints/
-runs/
-samples/
+# Anchored to the repo root. Unanchored 'data/' also matched src/data/,
+# which silently hid the entire pipeline from git.
+/data/
+/checkpoints/
+/runs/
+/samples/
 
 # Model artifacts
 *.pt

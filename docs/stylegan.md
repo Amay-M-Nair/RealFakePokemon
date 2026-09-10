@@ -145,14 +145,75 @@ what is actually broken.
 
 ## Measured throughput
 
-Fill in from the Phase 2 smoke run. Phase 3 sizes every budget from this.
+Smoke run, Arthropod (237 images), 20 kimg, **2026-09-10**.
 
 | | |
 |---|---|
-| sec / kimg (256px, batch from `paper256`) | *pending* |
-| accelerator used | *pending* |
-| 500 kimg | *pending* |
-| CUDA ops compiled or fell back | *pending* |
+| Environment | Kaggle, PyTorch **2.10.0+cu128**, Tesla T4 |
+| GPUs used | **1** of 2 |
+| CUDA ops | **compiled** (`bias_act`, `upfirdn2d`, 44 s build) |
+| sec/kimg, training only | **70.9** (ticks 1-5, dead flat) |
+| sec/kimg, wall clock | **75.0** (includes ~16.6 s/tick maintenance) |
+| Total | 20 kimg in 26.8 min |
+| GPU memory | **3.0 GB of 16** |
+| Drift from source net | 0.688 |
+
+Tick 0 reads 744 sec/kimg — kernel compilation and warm-up. It is excluded from
+the figure above, which is measured between ticks.
+
+Plan against **75 sec/kimg**, the wall-clock number. Per class:
+
+| kimg | hours | | 10 classes |
+|---|---|---|---|
+| 200 | 4.2 h | | 42 h |
+| 300 | 6.3 h | | 63 h |
+| 400 | 8.3 h | | 83 h |
+
+Against a **~30 GPU-h/week quota** that is 1.5-3 weeks of wall time, and the
+**12 h session cap** puts a hard ceiling near 500 kimg in one sitting.
+
+### Two large throughput levers, both unused
+
+`gpumem 3.0` on a 16 GB card is the tell.
+
+**1. The second T4 is idle.** `--gpus=1` was pinned deliberately, because
+multi-GPU routes through `multiprocessing.spawn` and buries tracebacks in
+`ProcessRaisedException`. That was the right call while the pipeline was
+unproven. It is proven now.
+
+**2. `batch_gpu` is 8 when it could be 32.** From `train.py:191`:
+
+```python
+args.batch_size = spec.mb                    # 64
+args.batch_gpu  = spec.mb // spec.ref_gpus   # 64 // 8 = 8
+```
+
+`ref_gpus=8` is the spec's **reference rig**, not the local GPU count -- line 167
+only overrides it under `--cfg=auto`. So batch 64 is run as **8 sequential
+accumulation rounds of 8 images**, paying 8x the launch overhead and using a
+fifth of the card.
+
+Raising `batch_gpu` changes only how the batch is *chunked*. `batch_size` stays
+64, so the gradients and every hyperparameter are unchanged -- this is pure
+throughput, not a change to training dynamics. The minibatch-stddev group is
+`mbstd=8`, and 32 is divisible by 8, so that layer is unaffected.
+
+There is no CLI flag for it; it needs a one-line patch:
+
+```python
+patch("train.py", "args.batch_gpu = spec.mb // spec.ref_gpus",
+      "args.batch_gpu = int(os.environ.get('BATCH_GPU', spec.mb // spec.ref_gpus))")
+```
+
+| config | accumulation rounds | expectation |
+|---|---|---|
+| 1 GPU, `batch_gpu=8` | 8 | **75 sec/kimg, measured** |
+| 2 GPUs, `batch_gpu=8` | 4 | ~40 |
+| 2 GPUs, `batch_gpu=32` | 1 | ~25, unverified |
+
+**Estimates, not measurements.** A 20 kimg re-run costs ~15 min of quota and
+settles it. At stake is roughly 63 h versus 21 h for ten classes, so measure
+before committing Phase 3.
 
 ---
 

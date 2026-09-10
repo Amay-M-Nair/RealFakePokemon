@@ -102,6 +102,18 @@ Step 2 of the notebook runs that exact double-backward on a 16x16 tensor. It
 costs a fraction of a second and fails immediately if a patch did not take,
 instead of ten minutes into training.
 
+### Reading the training log
+
+`conv2d_gradfix` warns on **every** convolution. Thousands of identical lines
+bury the progress ticks, and would bury a real traceback too -- the R1 failure
+above was diagnosed from a line number because the exception itself had been
+scrolled away. The notebook filters that one string and streams the rest live.
+
+**`Exiting...` means success.** It appears exactly twice in the upstream repo,
+`training_loop.py:419` and `calc_metrics.py:72`, both only after a run finishes
+normally, and `--metrics=none` means the second never executes. If the log ends
+there, the run completed.
+
 ### The one check that needs a human
 
 Step 3 renders samples straight from the pretrained pickle, before any training.

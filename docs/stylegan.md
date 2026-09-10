@@ -205,15 +205,29 @@ patch("train.py", "args.batch_gpu = spec.mb // spec.ref_gpus",
       "args.batch_gpu = int(os.environ.get('BATCH_GPU', spec.mb // spec.ref_gpus))")
 ```
 
-| config | accumulation rounds | expectation |
-|---|---|---|
-| 1 GPU, `batch_gpu=8` | 8 | **75 sec/kimg, measured** |
-| 2 GPUs, `batch_gpu=8` | 4 | ~40 |
-| 2 GPUs, `batch_gpu=32` | 1 | ~25, unverified |
+Accumulation rounds are `batch_size // (batch_gpu * num_gpus)` -- arithmetic,
+not an estimate:
 
-**Estimates, not measurements.** A 20 kimg re-run costs ~15 min of quota and
-settles it. At stake is roughly 63 h versus 21 h for ten classes, so measure
-before committing Phase 3.
+| config | rounds | sec/kimg |
+|---|---|---|
+| 1 GPU, `batch_gpu=8` | 8 | **75, measured** |
+| 2 GPUs, `batch_gpu=8` | 4 | unmeasured |
+| 2 GPUs, `batch_gpu=32` | 1 | unmeasured |
+
+**Expect ~35-45 sec/kimg**, not the ~25 an earlier draft of this file claimed.
+Two GPUs scale at roughly 1.7-1.9x rather than 2x -- Kaggle's T4s have no
+NVLink and sync gradients over PCIe -- and collapsing 8 rounds to 1 recovers
+launch overhead worth perhaps another 10-25% on top.
+
+| sec/kimg | 10 classes @ 300 kimg |
+|---|---|
+| 75 (measured) | 63 h |
+| 40 | 33 h |
+| 25 | 21 h |
+
+Even the pessimistic end roughly halves Phase 3 against a ~30 GPU-h weekly
+quota. Step 7 of the notebook measures it in ~10 minutes. Measure before
+committing Phase 3; do not plan against the estimate.
 
 ---
 

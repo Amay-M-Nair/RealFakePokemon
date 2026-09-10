@@ -45,38 +45,62 @@ P100 and T4 x2 share one pool, so P100 is often simply busy.
 3. **Check the weekly quota** (~30 GPU-h/week, resets weekly).
 
 The notebook trains one class for 20 kimg to confirm the pipeline works and to
-measure speed. Six code cells, ~120 lines.
+measure speed. Six code cells, ~150 lines.
 
-### Three upstream patches, all one-liners
+### Five upstream patches, in three files
 
-NVlabs targets PyTorch 1.7-1.10; Kaggle ships 2.x. Three small incompatibilities
+NVlabs targets PyTorch 1.7-1.10; Kaggle ships 2.x. Five small incompatibilities
 need fixing, and nothing else:
 
-| file | problem | fix |
+| file | problem | symptom |
 |---|---|---|
-| `custom_ops.py` | discards `cpp_extension.load()`'s return value | keep it |
-| `custom_ops.py` | then re-imports by name, unsupported on modern torch | delete that line |
-| `misc.py` | `Sampler.__init__` no longer takes `data_source` | `super().__init__()` |
+| `custom_ops.py` | discards `cpp_extension.load()`'s return value | kernels report *"Failed!"* **after** compiling fine, then silently fall back to slow reference code |
+| `custom_ops.py` | then re-imports by name, unsupported on modern torch | (same) |
+| `misc.py` | `Sampler.__init__` no longer takes `data_source` | `TypeError: object.__init__() takes exactly one argument` |
+| `grid_sample_gradfix.py` | version gate disables it on torch 2.x | `RuntimeError: derivative for aten::grid_sampler_2d_backward is not implemented`, from `.backward()` at `loss.py:131` |
+| `grid_sample_gradfix.py` | `aten::grid_sampler_2d_backward` gained a 7th arg (`output_mask`) | would fail once the gate is opened |
 
-Symptom of the first two: CUDA kernels report *"Failed!"* **after** compiling
-successfully, then silently fall back to slow reference code. Symptom of the
-third: `TypeError: object.__init__() takes exactly one argument`.
+The `patch()` helper **asserts its target string is present**. A silent no-op is
+the worst outcome available here: the file looks pristine, and the failure
+surfaces much later somewhere unrelated.
 
-### Do NOT patch conv2d_gradfix / grid_sample_gradfix
+### grid_sample_gradfix is REQUIRED. conv2d_gradfix is not.
 
-They gate themselves to torch 1.7-1.9 and warn *"Falling back to
-torch.nn.functional.conv2d()"* on anything newer. **That warning is correct
-behaviour. Leave it.**
+These two files look interchangeable and are not. Both gate themselves to torch
+1.7-1.9 and warn *"Falling back to torch.nn.functional..."* on anything newer,
+but only one of those fallbacks is safe.
 
-The custom op calls `aten::cudnn_convolution_backward_weight`, removed in
-PyTorch 1.13, via `torch._C._jit_get_operation`, which now returns a tuple
-rather than a callable. Forcing the gate open raises
-`TypeError: 'tuple' object is not callable` inside `backward()`.
+**`grid_sample_gradfix` must be enabled.** It exists to supply the *second*
+derivative of `grid_sample`, which PyTorch **still does not have**. The R1
+gradient penalty differentiates through the ADA augment pipeline — which
+geometrically transforms via `grid_sample` — with `create_graph=True`, then
+calls `.backward()`. That is a double backward. Without the patch, training runs
+normally through dataset build, network construction and the sampler, then dies
+partway into the first tick.
 
-This was tried, and it cost several debugging rounds. Unpatched, the fallback is
-correct and supports the double-backward that the R1 penalty needs. It is
-slightly slower and entirely fine. `bias_act` and `upfirdn2d` -- the kernels
-that actually drive throughput -- are separate code and unaffected.
+The op it wraps, `aten::grid_sampler_2d_backward`, **still exists**; only its
+signature drifted. Two patches restore it: open the gate, and reach it through
+`torch.ops.aten` (rather than `torch._C._jit_get_operation`, which now returns a
+`(op, overload_names)` tuple) with the extra `output_mask` argument.
+
+**`conv2d_gradfix` must stay disabled.** Its op,
+`aten::cudnn_convolution_backward_weight`, was **deleted** from PyTorch in 1.13.
+There is nothing to re-point it at. Forcing that gate open raises
+`TypeError: 'tuple' object is not callable` inside `backward()`. Plain
+`F.conv2d` supports double backward perfectly well; the only loss is that
+`no_weight_gradients()` becomes a no-op, so the R1 pass computes weight
+gradients it discards. That is a modest speed cost, not a correctness one.
+
+Both facts were verified by running the code, not inferred:
+
+```
+F.grid_sample double backward: FAILS -> derivative ... is not implemented
+F.conv2d     double backward: WORKS
+```
+
+Step 2 of the notebook runs that exact double-backward on a 16x16 tensor. It
+costs a fraction of a second and fails immediately if a patch did not take,
+instead of ten minutes into training.
 
 ### The one check that needs a human
 
@@ -88,7 +112,7 @@ run would silently train from scratch. *(Confirmed working.)*
 
 Checked against `NVlabs/stylegan2-ada-pytorch@main` rather than assumed:
 
-- All three patch strings match, and the patched files still parse.
+- All five patch strings match upstream `@main`, and the patched files still parse.
 - `dataset_tool.py` takes `--source` / `--dest`.
 - `ImageFolderDataset(path, **super_kwargs)` accepts `use_labels`, `max_size`,
   `xflip`, and exposes `image_shape`.

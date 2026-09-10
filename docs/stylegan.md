@@ -47,10 +47,10 @@ P100 and T4 x2 share one pool, so P100 is often simply busy.
 The notebook trains one class for 20 kimg to confirm the pipeline works and to
 measure speed. Six code cells, ~150 lines.
 
-### Five upstream patches, in three files
+### Seven upstream patches, in four files
 
-NVlabs targets PyTorch 1.7-1.10; Kaggle ships 2.x. Five small incompatibilities
-need fixing, and nothing else:
+NVlabs targets PyTorch 1.7-1.10; Kaggle ships 2.x. Seven small incompatibilities
+need fixing, and nothing else. The last two matter only for multi-GPU:
 
 | file | problem | symptom |
 |---|---|---|
@@ -59,6 +59,8 @@ need fixing, and nothing else:
 | `misc.py` | `Sampler.__init__` no longer takes `data_source` | `TypeError: object.__init__() takes exactly one argument` |
 | `grid_sample_gradfix.py` | version gate disables it on torch 2.x | `RuntimeError: derivative for aten::grid_sampler_2d_backward is not implemented`, from `.backward()` at `loss.py:131` |
 | `grid_sample_gradfix.py` | `aten::grid_sampler_2d_backward` gained a 7th arg (`output_mask`) | would fail once the gate is opened |
+| `train.py` | `batch_gpu` hard-coded to `mb // ref_gpus` | 8 accumulation rounds, 3 GB of 16 used |
+| `training_loop.py` | ranks disagree on `noise_const` | `AssertionError: Generator.synthesis.b4.conv1.noise_const` |
 
 The `patch()` helper **asserts its target string is present**. A silent no-op is
 the worst outcome available here: the file looks pristine, and the failure
@@ -101,6 +103,39 @@ F.conv2d     double backward: WORKS
 Step 2 of the notebook runs that exact double-backward on a 16x16 tensor. It
 costs a fraction of a second and fails immediately if a patch did not take,
 instead of ten minutes into training.
+
+### The multi-GPU buffer bug
+
+`--gpus=2` fails at the first snapshot with:
+
+```
+AssertionError: Generator.synthesis.b4.conv1.noise_const
+  training_loop.py:360  misc.check_ddp_consistency(module, ignore_regex=r'.*\.w_avg')
+```
+
+Two independent causes, both real:
+
+1. **`training_loop.py:155`** -- `if (resume_pkl is not None) and (rank == 0)`.
+   Only rank 0 loads the pretrained net, so only rank 0 gets the pickle's
+   `noise_const`. Rank 1 keeps the one it randomly initialised, from a different
+   per-rank seed (`training_loop.py:125`).
+2. **`training_loop.py:187`** -- DDP is constructed with
+   `broadcast_buffers=False`. On torch 1.7-1.9 that only controlled per-forward
+   syncing and buffers were *always* broadcast at construction. Modern torch
+   passes the flag through to `_sync_module_states`, which then skips
+   `named_buffers()` entirely. That is why this code worked in 2021.
+
+**Parameters are still synced** -- `_sync_module_states` adds
+`named_parameters()` unconditionally -- so rank 1 was never training from random
+weights. Only buffers drift, and `noise_const` is read only under
+`noise_mode='const'` (inference), never during training. The assert is correct
+that the ranks disagree; the consequence was narrower than it looks.
+
+Fix: broadcast params and buffers once from rank 0, after the resume block and
+before DDP wraps anything. Four lines, no per-iteration cost.
+
+`Grad strides do not match bucket view strides` also appears under DDP. It is a
+gradient-layout hint, not an error, and it is filtered from the notebook output.
 
 ### Reading the training log
 

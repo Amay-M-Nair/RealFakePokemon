@@ -268,47 +268,66 @@ committing Phase 3; do not plan against the estimate.
 
 ## Phase 3 — per-class fine-tuning
 
+`notebooks/02_finetune.ipynb`. **One class per session.**
+
+Uses the exact configuration that completed Phase 2 -- one GPU, default
+`batch_gpu`, five patches. The multi-GPU and `BATCH_GPU` work from notebook 01
+is deliberately not carried over: it was never measured end to end, and Phase 3
+does not need it to fit the quota.
+
 ```bash
-python train.py \
-  --outdir=/kaggle/working/out --data=<class>.zip --gpus=<1 or 2> \
-  --cfg=paper256 --mirror=1 --aug=ada --target=0.6 \
-  --resume=<source or last snapshot> \
-  --freezed=<tune> --snap=10 --metrics=kid50k_full --kimg=<budget>
+python train.py   --outdir=<out> --data=<class>.zip --gpus=1   --cfg=paper256 --mirror=1 --aug=ada --target=0.6   --resume=<source net or previous snapshot>   --snap=10 --metrics=none --kimg=300
 ```
+
+### Budget
+
+300 kimg at the measured 75 sec/kimg is **6.3 h**, comfortably inside the 12 h
+session cap. `kimg` counts images *shown*, not epochs, so Mammalian's 789 images
+cost exactly the same as Arthropod's 237.
+
+| # | class | images | share of the 400-image target |
+|---|---|---|---|
+| 1 | `mammalian` | 789 | 37% |
+| 2 | `arthropod` | 237 | 11% |
+| 3 | `plant_fungus` | 197 | 9% |
+
+Three sessions, ~19 h, one quota-week. **Stop there and judge** before spending
+the remaining seven classes' worth of quota.
+
+### Run it as a saved version
+
+**Save Version -> Save & Run All (Commit)**, not interactively. A browser tab
+will not survive 6.3 h; a committed run goes headless for up to 12 h.
 
 ### Flags that matter
 
-- **`--cfg=paper256` is load-bearing.** The source net is literally named
-  `paper256`; any other config changes layer shapes and `--resume` fails.
-- `--mirror=1` doubles effective data for free — Pokémon artwork has no
+- **`--cfg=paper256` is load-bearing.** The source net is named `paper256`; any
+  other config changes layer shapes and `--resume` fails.
+- `--mirror=1` doubles effective data for free -- Pokemon artwork has no
   meaningful chirality.
 - `--aug=ada` is the entire reason for choosing this model over plain StyleGAN2.
-- `--freezed` (FreezeD) freezes the first N discriminator layers. Treat it as
-  the first knob to tune, not a fixed value.
-- **KID, not FID.** Consistent with Phase 1 and correct at 71–789 real images,
-  where FID's covariance estimate is badly biased. Note `kid50k_full` still
-  generates 50k samples, so it is expensive on a short run — use
-  `--metrics=none` for smoke tests.
+- `--snap=10` writes a snapshot and a sample grid every 40 kimg, giving Phase 4
+  about eight checkpoints. **The best snapshot is rarely the last one.**
+- `--freezed` (FreezeD) stays at 0 for the pilot. It is the first knob to reach
+  for if results disappoint, not a fixed value to guess at now.
+
+### Why `--metrics=none` during training
+
+KID belongs in Phase 4, where it ranks snapshots in one pass. Running it here
+spends time inside the 12 h cap producing a number nobody acts on until then,
+and `kid50k_full` generates 50k samples per evaluation.
+
+The sample grids are the better in-flight signal anyway: the deliverable is a
+game where people guess real from fake, so human judgement of the grids is
+closer to the actual objective than KID is. KID's job in Phase 4 is to rank
+snapshots that already look plausible.
 
 ### The resume caveat
 
 `--resume` restores G, D, G_ema and the ADA augment pipeline, but **not the
-optimizer state**. Across Kaggle's 12 h cap that means Adam momentum resets at
-every session boundary. Size each class to finish inside one session.
-
-### Class sizes
-
-| class | images | | class | images |
-|---|---|---|---|---|
-| Mammalian | 789 | | Mineral & Construct | 154 |
-| Arthropod | 237 | | Fish | 103 |
-| Plant & Fungus | 197 | | Amorphous & Ghost | 96 |
-| Reptilian | 194 | | Invertebrate | 91 |
-| Avian | 187 | | Amphibian | 71 |
-
-Pilot order is Mammalian → Arthropod → Plant & Fungus: the three largest, and
-together **58% of the 400-image target**, so failure is cheap and success
-delivers most of the deliverable.
+optimizer state**. Across the 12 h cap that means Adam momentum resets at every
+session boundary, so each class is sized to finish inside one session. Continuing
+a class across sessions is supported (`RESUME` in step 1) but is second best.
 
 ---
 

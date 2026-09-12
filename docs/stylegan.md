@@ -247,7 +247,12 @@ Enabling it needs two patches beyond the correctness five -- `BATCH_GPU` and the
 
 ## Phase 3 — per-class fine-tuning
 
-`notebooks/02_finetune.ipynb`. **One class per session.**
+`notebooks/02_finetune.ipynb`. **Two cells per class** -- one to train, one to
+show results -- so a class can be run and judged before the next is started.
+
+Every class trains from the LSUN Dog net with its own dataset zip and its own
+output directory. `train(cls, resume=...)` takes the checkpoint per call, so
+extending one class cannot seed another. Nothing is shared between classes.
 
 Runs on **2 GPUs with `batch_gpu=32`**, measured at 33.2 sec/kimg -- 2.14x the
 single-GPU baseline. That needs all seven patches, including the two multi-GPU

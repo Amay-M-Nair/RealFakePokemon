@@ -132,7 +132,14 @@ weights. Only buffers drift, and `noise_const` is read only under
 that the ranks disagree; the consequence was narrower than it looks.
 
 Fix: broadcast params and buffers once from rank 0, after the resume block and
-before DDP wraps anything. Four lines, no per-iteration cost.
+before DDP wraps anything. No per-iteration cost.
+
+It also calls `torch.cuda.set_device(device)` first. **NVlabs never calls
+`set_device` anywhere** -- it relies on `device_ids=[device]` when constructing
+DDP. Since this broadcast runs *before* DDP exists, rank 1's tensors are on
+`cuda:1` while the current device is still `cuda:0`, and NCCL in that state can
+**hang rather than raise**. A hang burns quota silently, which is worse than a
+crash.
 
 `Grad strides do not match bucket view strides` also appears under DDP. It is a
 gradient-layout hint, not an error, and it is filtered from the notebook output.

@@ -203,73 +203,45 @@ Smoke run, Arthropod (237 images), 20 kimg, **2026-09-10**.
 Tick 0 reads 744 sec/kimg — kernel compilation and warm-up. It is excluded from
 the figure above, which is measured between ticks.
 
-Plan against **75 sec/kimg**, the wall-clock number. Per class:
+That 75.0 is the **single-GPU baseline** and is superseded -- see the next
+section. Phase 3 plans against **33.2 sec/kimg**:
 
-| kimg | hours | | 10 classes |
-|---|---|---|---|
-| 200 | 4.2 h | | 42 h |
-| 300 | 6.3 h | | 63 h |
-| 400 | 8.3 h | | 83 h |
-
-Against a **~30 GPU-h/week quota** that is 1.5-3 weeks of wall time, and the
-**12 h session cap** puts a hard ceiling near 500 kimg in one sitting.
-
-### Two large throughput levers, both unused
-
-`gpumem 3.0` on a 16 GB card is the tell.
-
-**1. The second T4 is idle.** `--gpus=1` was pinned deliberately, because
-multi-GPU routes through `multiprocessing.spawn` and buries tracebacks in
-`ProcessRaisedException`. That was the right call while the pipeline was
-unproven. It is proven now.
-
-**2. `batch_gpu` is 8 when it could be 32.** From `train.py:191`:
-
-```python
-args.batch_size = spec.mb                    # 64
-args.batch_gpu  = spec.mb // spec.ref_gpus   # 64 // 8 = 8
-```
-
-`ref_gpus=8` is the spec's **reference rig**, not the local GPU count -- line 167
-only overrides it under `--cfg=auto`. So batch 64 is run as **8 sequential
-accumulation rounds of 8 images**, paying 8x the launch overhead and using a
-fifth of the card.
-
-Raising `batch_gpu` changes only how the batch is *chunked*. `batch_size` stays
-64, so the gradients and every hyperparameter are unchanged -- this is pure
-throughput, not a change to training dynamics. The minibatch-stddev group is
-`mbstd=8`, and 32 is divisible by 8, so that layer is unaffected.
-
-There is no CLI flag for it; it needs a one-line patch:
-
-```python
-patch("train.py", "args.batch_gpu = spec.mb // spec.ref_gpus",
-      "args.batch_gpu = int(os.environ.get('BATCH_GPU', spec.mb // spec.ref_gpus))")
-```
-
-Accumulation rounds are `batch_size // (batch_gpu * num_gpus)` -- arithmetic,
-not an estimate:
-
-| config | rounds | sec/kimg |
+| kimg | per class | 10 classes |
 |---|---|---|
-| 1 GPU, `batch_gpu=8` | 8 | **75, measured** |
-| 2 GPUs, `batch_gpu=8` | 4 | unmeasured |
-| 2 GPUs, `batch_gpu=32` | 1 | unmeasured |
+| 200 | 1.8 h | 18 h |
+| 300 | **2.8 h** | **28 h** |
+| 400 | 3.7 h | 37 h |
 
-**Expect ~35-45 sec/kimg**, not the ~25 an earlier draft of this file claimed.
-Two GPUs scale at roughly 1.7-1.9x rather than 2x -- Kaggle's T4s have no
-NVLink and sync gradients over PCIe -- and collapsing 8 rounds to 1 recovers
-launch overhead worth perhaps another 10-25% on top.
+Against a **~30 GPU-h/week quota**, ten classes at 300 kimg fit one week, and the
+**12 h session cap** holds ~1300 kimg -- four classes per session.
 
-| sec/kimg | 10 classes @ 300 kimg |
-|---|---|
-| 75 (measured) | 63 h |
-| 40 | 33 h |
-| 25 | 21 h |
+### Throughput, all three configs measured
 
-Even the pessimistic end roughly halves Phase 3 against a ~30 GPU-h weekly
-quota. Step 7 of the notebook measures it in ~10 minutes. Measure before
-committing Phase 3; do not plan against the estimate.
+`train.py:191` pins `batch_gpu = spec.mb // spec.ref_gpus`, and `ref_gpus=8` is
+NVlabs' reference rig, not the local GPU count -- line 167 overrides it only
+under `--cfg=auto`. So batch 64 ran as 8 sequential rounds of 8 images on one
+card, at 3.0 GB of 16, with the second T4 idle.
+
+`batch_size` stays 64 in every row, so gradients and all hyperparameters are
+identical. Only the chunking and the GPU count change.
+
+| config | rounds | sec/kimg | | 300 kimg/class | 10 classes |
+|---|---|---|---|---|---|
+| 1 GPU, `batch_gpu=8` | 8 | 70.9 | baseline | 5.9 h | 59 h |
+| 1 GPU, `batch_gpu=32` | 2 | 65.5 | 1.08x | 5.5 h | 55 h |
+| **2 GPUs, `batch_gpu=32`** | 1 | **33.2** | **2.14x** | **2.8 h** | **28 h** |
+
+**The accumulation-round theory was mostly wrong.** Collapsing 8 rounds to 2 on
+one GPU bought only 8%, because the T4 was already compute-bound at batch 8 --
+the launch overhead was never the bottleneck. The second GPU was the whole win,
+and 2.14x exceeds a clean 2x only because it stacks both effects.
+
+This is what makes the full run affordable: ten classes at 300 kimg is **28 h**,
+inside a single ~30 GPU-h week, against 59 h on the original config. At 2.8 h per
+class the 12 h session cap fits four classes per session.
+
+Enabling it needs two patches beyond the correctness five -- `BATCH_GPU` and the
+`training_loop.py` buffer sync -- both documented above.
 
 ---
 
@@ -277,10 +249,9 @@ committing Phase 3; do not plan against the estimate.
 
 `notebooks/02_finetune.ipynb`. **One class per session.**
 
-Uses the exact configuration that completed Phase 2 -- one GPU, default
-`batch_gpu`, five patches. The multi-GPU and `BATCH_GPU` work from notebook 01
-is deliberately not carried over: it was never measured end to end, and Phase 3
-does not need it to fit the quota.
+Runs on **2 GPUs with `batch_gpu=32`**, measured at 33.2 sec/kimg -- 2.14x the
+single-GPU baseline. That needs all seven patches, including the two multi-GPU
+ones.
 
 ```bash
 python train.py   --outdir=<out> --data=<class>.zip --gpus=1   --cfg=paper256 --mirror=1 --aug=ada --target=0.6   --resume=<source net or previous snapshot>   --snap=10 --metrics=none --kimg=300
@@ -288,9 +259,10 @@ python train.py   --outdir=<out> --data=<class>.zip --gpus=1   --cfg=paper256 --
 
 ### Budget
 
-300 kimg at the measured 75 sec/kimg is **6.3 h**, comfortably inside the 12 h
-session cap. `kimg` counts images *shown*, not epochs, so Mammalian's 789 images
-cost exactly the same as Arthropod's 237.
+300 kimg at the measured **33.2 sec/kimg** (2 GPUs, `batch_gpu=32`) is **2.8 h**,
+well inside the 12 h session cap -- four classes fit one session. `kimg` counts
+images *shown*, not epochs, so Mammalian's 789 images cost exactly the same as
+Arthropod's 237.
 
 | # | class | images | share of the 400-image target |
 |---|---|---|---|
@@ -298,13 +270,13 @@ cost exactly the same as Arthropod's 237.
 | 2 | `arthropod` | 237 | 11% |
 | 3 | `plant_fungus` | 197 | 9% |
 
-Three sessions, ~19 h, one quota-week. **Stop there and judge** before spending
-the remaining seven classes' worth of quota.
+All three in **one 8.3 h session**. **Stop there and judge** before spending the
+remaining seven, which now cost only ~19 h more.
 
 ### Run it as a saved version
 
 **Save Version -> Save & Run All (Commit)**, not interactively. A browser tab
-will not survive 6.3 h; a committed run goes headless for up to 12 h.
+will not survive a multi-hour run; a committed version goes headless for 12 h.
 
 ### Flags that matter
 

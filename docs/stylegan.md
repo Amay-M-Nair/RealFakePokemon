@@ -245,43 +245,70 @@ Enabling it needs two patches beyond the correctness five -- `BATCH_GPU` and the
 
 ---
 
-## Phase 3 — per-class fine-tuning
+## Phase 3 — two-stage fine-tuning
 
-`notebooks/02_finetune.ipynb`. **Two cells per class** -- one to train, one to
-show results -- so a class can be run and judged before the next is started.
+`notebooks/02_finetune.ipynb`.
 
-Every class trains from the LSUN Dog net with its own dataset zip and its own
-output directory. `train(cls, resume=...)` takes the checkpoint per call, so
-extending one class cannot seed another. Nothing is shared between classes.
-
-Runs on **2 GPUs with `batch_gpu=32`**, measured at 33.2 sec/kimg -- 2.14x the
-single-GPU baseline. That needs all seven patches, including the two multi-GPU
-ones.
-
-```bash
-python train.py   --outdir=<out> --data=<class>.zip --gpus=1   --cfg=paper256 --mirror=1 --aug=ada --target=0.6   --resume=<source net or previous snapshot>   --snap=10 --metrics=none --kimg=300
+```
+LSUN Dog  ->  Pokemon base (all 2,119)  ->  per-class
 ```
 
-### Budget
+### Why a base stage
 
-300 kimg at the measured **33.2 sec/kimg** (2 GPUs, `batch_gpu=32`) is **2.8 h**,
-well inside the 12 h session cap -- four classes fit one session. `kimg` counts
-images *shown*, not epochs, so Mammalian's 789 images cost exactly the same as
-Arthropod's 237.
+Mammalian trained 300 kimg straight from LSUN Dog produced plausible Pokemon
+with clean backgrounds and no trace of the dog prior -- but a lot of unresolved
+anatomy: limbs that do not close, faces melting into bodies, roughly 8-12
+archetypes doing most of the work and 5-10% outright failures. No memorisation
+was visible.
 
-| # | class | images | share of the 400-image target |
-|---|---|---|---|
-| 1 | `mammalian` | 789 | 37% |
-| 2 | `arthropod` | 237 | 11% |
-| 3 | `plant_fungus` | 197 | 9% |
+That is **sparse coverage of a wide manifold**, not a bad initialisation. 789
+images spread over hundreds of distinct species is about one image per mode, so
+the generator interpolates between dissimilar points instead of learning a
+manifold. Swapping the source net does not fix it -- and at 256px there is
+nothing to swap to, since NVlabs ships only `ffhq256`, `celebahq256` and
+`lsundog256`, the first two being human faces.
 
-All three in **one 8.3 h session**. **Stop there and judge** before spending the
-remaining seven, which now cost only ~19 h more.
+A base trained on all 2,119 images learns how Pokemon anatomy resolves. Each
+class then only learns its flavour, in fewer kimg and with less room to overfit.
 
-### Run it as a saved version
+### The budget does not change
 
-**Save Version -> Save & Run All (Commit)**, not interactively. A browser tab
-will not survive a multi-hour run; a committed version goes headless for 12 h.
+| | kimg | hours at 33.2 sec/kimg |
+|---|---|---|
+| 10 classes x 300, from dogs | 3,000 | 27.7 |
+| base 1,000 + 10 x 200 | 3,000 | 27.6 |
+
+The small classes gain most: Amphibian's 71 images go from starting at dogs to
+starting at a model that has seen every Pokemon.
+
+### Keep the LSUN Dog init for the base
+
+Initialisation decides where training *starts*, not where it *ends*. The
+dog-prior worry applies to short fine-tunes on small data; 1,000 kimg on 2,119
+images is neither, and the Mammalian run already showed the prior gone by 300.
+Dropping it only costs convergence speed. Training from scratch is not an
+option: NVlabs' own from-scratch low-data runs use ~25,000 kimg, which is 230 h
+here.
+
+### Mechanics
+
+`dataset_tool.py` globs with `rglob`, so pointing `--source` at the parent folder
+sweeps in every class -- the base needs no new export code. It is unconditional,
+which also sidesteps the conditional-resume shape mismatch (`networks.py:201`
+widens `mapping.fc0` from 512 to 1024 when `c_dim > 0`, and
+`copy_params_and_buffers` does a bare `copy_` that raises rather than skipping).
+
+`train()` resolves its checkpoint in order -- explicit argument, `BASE` setting,
+a base trained this session, then LSUN Dog -- and **prints which one it used**.
+Each class has its own dataset zip and output directory, and never resumes from
+another class.
+
+### Costs
+
+- **Sequential.** ~9.2 h of critical path before any class can start.
+- **Single point of failure.** Check the base's grids before spending on classes.
+- **Session boundary.** `/kaggle/working` does not survive; save the base run as
+  a Dataset and point `BASE` at it.
 
 ### Flags that matter
 
@@ -289,29 +316,17 @@ will not survive a multi-hour run; a committed version goes headless for 12 h.
   other config changes layer shapes and `--resume` fails.
 - `--mirror=1` doubles effective data for free -- Pokemon artwork has no
   meaningful chirality.
-- `--aug=ada` is the entire reason for choosing this model over plain StyleGAN2.
-- `--snap=10` writes a snapshot and a sample grid every 40 kimg, giving Phase 4
-  about eight checkpoints. **The best snapshot is rarely the last one.**
-- `--freezed` (FreezeD) stays at 0 for the pilot. It is the first knob to reach
-  for if results disappoint, not a fixed value to guess at now.
-
-### Why `--metrics=none` during training
-
-KID belongs in Phase 4, where it ranks snapshots in one pass. Running it here
-spends time inside the 12 h cap producing a number nobody acts on until then,
-and `kid50k_full` generates 50k samples per evaluation.
-
-The sample grids are the better in-flight signal anyway: the deliverable is a
-game where people guess real from fake, so human judgement of the grids is
-closer to the actual objective than KID is. KID's job in Phase 4 is to rank
-snapshots that already look plausible.
+- `--snap=10` gives ~8 checkpoints. **The best is rarely the last**, which
+  matters more than usual here given the diversity question.
+- `--metrics=none` during training: KID belongs in Phase 4, and `kid50k_full`
+  generates 50k samples per evaluation.
+- `--freezed` stays 0 until `ada_p` says otherwise.
 
 ### The resume caveat
 
-`--resume` restores G, D, G_ema and the ADA augment pipeline, but **not the
-optimizer state**. Across the 12 h cap that means Adam momentum resets at every
-session boundary, so each class is sized to finish inside one session. Continuing
-a class across sessions is supported (`RESUME` in step 1) but is second best.
+`--resume` restores G, D, G_ema and the ADA pipeline but **not the optimizer
+state**, so Adam momentum resets at every stage boundary and every session
+boundary. Size each run to finish in one session.
 
 ---
 

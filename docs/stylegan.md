@@ -330,6 +330,55 @@ boundary. Size each run to finish in one session.
 
 ---
 
+## Phase 3.5 — diffusion, as a comparison
+
+`notebooks/03_diffusion.ipynb`. **Decides one thing:** GAN or diffusion for the
+400 images.
+
+One SD 1.5 LoRA on all 2,119 captioned images, ~1 h, then a Mammalian grid to
+put beside `fakes000300.png`. The caption carries the class, so one model covers
+all ten and class is chosen by prompt -- which would remove the 28 h of per-class
+GAN training entirely.
+
+Needs a 512px export (native artwork is 475x475, so a 1.08x upscale rather than
+the 2x from the 256 set):
+
+```bash
+python -m src.data.preprocess --resolution 512
+python -m src.data.export_stylegan --resolution 512 --out data/diffusion512 --zip
+```
+
+### The catch
+
+**Stable Diffusion already knows what Pokemon look like** -- it was trained on
+scraped web data that includes them. The LoRA is not learning Pokemon from the
+2,119 images; it is re-surfacing what the base model already has, steered by
+them.
+
+So results will look better than the data alone justifies, the provenance story
+gets murkier than "generated from my dataset", and the Phase 4 memorisation
+screen becomes essential rather than precautionary. **A beautiful Charizard is a
+failure, not a success.**
+
+The GAN has only ever seen the 2,119 images. That is a cleaner claim, and it is
+the main thing weighing against a pivot.
+
+### Judging it
+
+Against the StyleGAN grid, on three axes:
+
+1. **Anatomy** -- limbs closing, faces resolving. Where the GAN struggled at 789
+   images and where diffusion should win clearly.
+2. **Variety** -- different creatures, or one creature restyled? The GAN showed
+   8-12 attractors doing most of the work.
+3. **Novelty** -- scan for recognisable real Pokemon.
+
+If diffusion wins, Phase 1 and Phases 4-7 carry over unchanged and Phases 2-3
+are dropped. If not, run `train_base()` and continue. Either way an hour settles
+a question that would otherwise hang over the rest of the project.
+
+---
+
 ## Expectations
 
 Transfer learning at 100-shot scale is a demonstrated regime (Obama, Grumpy Cat,
